@@ -1,0 +1,12 @@
+name = "lok-vera"
+compatibility_date = "2025-02-01"
+pages_build_output_dir = ".vercel/output/static"
+
+# Cloudflare Pages configuration
+[env.production]
+vars = { ENVIRONMENT = "production" }
+
+# Secrets are managed via Cloudflare dashboard
+# TELEGRAM_BOT_TOKEN
+# TELEGRAM_CHAT_ID
+
