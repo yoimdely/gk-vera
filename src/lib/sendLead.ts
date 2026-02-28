@@ -1,100 +1,165 @@
+﻿import siteConfig from "../../site.config.json";
+
 export type LeadPayload = {
-  name: string
-  phone: string
-  contact_method: string
-  message?: string
-  page_url?: string
-  utm_source?: string
-  utm_medium?: string
-  utm_campaign?: string
-  utm_term?: string
-  utm_content?: string
-  communication?: boolean
+  name?: string;
+  phone?: string;
+  email?: string;
+  source?: string;
+  message?: string;
+  quiz?: Record<string, unknown> | string;
+  hp?: string;
+  pageUrl?: string;
+  siteHost?: string;
+  utm?: Record<string, string>;
+  utm_source?: string;
+  utm_medium?: string;
+  utm_campaign?: string;
+  utm_content?: string;
+  utm_term?: string;
+};
+
+type SiteConfig = {
+  siteId: string;
+  siteUrl: string;
+  chatId: string;
+};
+
+const APPS_SCRIPT_URL =
+  "https://script.google.com/macros/s/AKfycbyGL5Y4gBm9-2V_bBsT8QOmRwiJ1-sHOjnCOfYfzHeEXh-_FmeMsqISHJGEhrE1-8sV/exec";
+const REQUEST_TIMEOUT_MS = 10000;
+
+const FIELD_LIMITS = {
+  siteId: 80,
+  siteUrl: 255,
+  chatId: 80,
+  name: 100,
+  phone: 30,
+  email: 120,
+  source: 80,
+  message: 4000,
+  quiz: 12000,
+  pageUrl: 1500,
+  siteHost: 255,
+  hp: 255,
+  utm: 120,
+} as const;
+
+const SITE_CONFIG = siteConfig as SiteConfig;
+
+function clean(value: unknown, maxLength: number) {
+  return String(value ?? "").trim().slice(0, maxLength);
 }
 
-type TelegramResult = {
-  ok: boolean
-  status?: number
-  skipped?: boolean
-}
-
-async function sendTelegram(payload: LeadPayload): Promise<TelegramResult> {
-  const token = process.env.TELEGRAM_BOT_TOKEN
-  const chatId = process.env.TELEGRAM_CHAT_ID
-  
-  if (!token || !chatId) {
-    console.warn("Telegram credentials not configured. Lead would be saved but not sent.")
-    console.log("Lead data:", payload)
-    return { ok: true, skipped: true }
+function getUrlUtm() {
+  if (typeof window === "undefined") {
+    return {
+      utm_source: "",
+      utm_medium: "",
+      utm_campaign: "",
+      utm_content: "",
+      utm_term: "",
+    };
   }
 
-  const lines = [
-    "🎯 Новая заявка ЛОК VERA / ВЕРА",
-    "",
-    payload.name ? `👤 Имя: ${payload.name}` : "👤 Имя: не указано",
-    `📞 Телефон: ${payload.phone}`,
-    `💬 Способ связи: ${payload.contact_method}`,
-    payload.message ? `📝 Комментарий: ${payload.message}` : undefined,
-    payload.page_url ? `🔗 Страница: ${payload.page_url}` : undefined,
-    "",
-    payload.utm_source || payload.utm_medium || payload.utm_campaign ? "📊 UTM параметры:" : undefined,
-    payload.utm_source ? `  • utm_source: ${payload.utm_source}` : undefined,
-    payload.utm_medium ? `  • utm_medium: ${payload.utm_medium}` : undefined,
-    payload.utm_campaign ? `  • utm_campaign: ${payload.utm_campaign}` : undefined,
-    payload.utm_term ? `  • utm_term: ${payload.utm_term}` : undefined,
-    payload.utm_content ? `  • utm_content: ${payload.utm_content}` : undefined,
-    "",
-    payload.communication ? "✅ Согласен на коммуникации" : "❌ Не согласен на коммуникации",
-  ].filter(Boolean)
+  const search = new URLSearchParams(window.location.search);
 
-  const text = lines.join("\n")
+  return {
+    utm_source: search.get("utm_source") ?? "",
+    utm_medium: search.get("utm_medium") ?? "",
+    utm_campaign: search.get("utm_campaign") ?? "",
+    utm_content: search.get("utm_content") ?? "",
+    utm_term: search.get("utm_term") ?? "",
+  };
+}
+
+function normalizeUtm(payload: LeadPayload) {
+  const fromPayload = payload.utm ?? {};
+  const fromUrl = getUrlUtm();
+
+  return {
+    utm_source: clean(payload.utm_source ?? fromPayload.utm_source ?? fromUrl.utm_source, FIELD_LIMITS.utm),
+    utm_medium: clean(payload.utm_medium ?? fromPayload.utm_medium ?? fromUrl.utm_medium, FIELD_LIMITS.utm),
+    utm_campaign: clean(payload.utm_campaign ?? fromPayload.utm_campaign ?? fromUrl.utm_campaign, FIELD_LIMITS.utm),
+    utm_content: clean(payload.utm_content ?? fromPayload.utm_content ?? fromUrl.utm_content, FIELD_LIMITS.utm),
+    utm_term: clean(payload.utm_term ?? fromPayload.utm_term ?? fromUrl.utm_term, FIELD_LIMITS.utm),
+  };
+}
+
+function normalizeQuiz(quiz: LeadPayload["quiz"]) {
+  if (!quiz) {
+    return "";
+  }
+
+  if (typeof quiz === "string") {
+    return clean(quiz, FIELD_LIMITS.quiz);
+  }
 
   try {
-    const response = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        chat_id: chatId,
-        text,
-        disable_web_page_preview: true,
-      }),
-    })
-    
-    if (!response.ok) {
-      console.error(`Telegram API error: ${response.status}`)
-      const errorData = await response.json()
-      console.error("Telegram error details:", errorData)
-      return { ok: false, status: response.status }
-    }
-    
-    console.log("Telegram message sent successfully")
-    return { ok: response.ok, status: response.status }
-  } catch (error) {
-    console.error("Error sending to Telegram:", error)
-    return { ok: false }
+    return clean(JSON.stringify(quiz), FIELD_LIMITS.quiz);
+  } catch {
+    return "";
   }
 }
 
 export async function sendLead(payload: LeadPayload) {
-  const webhookUrl = process.env.LEAD_WEBHOOK_URL
-  let webhookResult = { ok: true, skipped: true as boolean, status: undefined as number | undefined }
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 
-  if (webhookUrl) {
-    const response = await fetch(webhookUrl, {
+  const pageUrl = clean(
+    payload.pageUrl ?? (typeof window !== "undefined" ? window.location.href : ""),
+    FIELD_LIMITS.pageUrl,
+  );
+  const siteHost = clean(
+    payload.siteHost ?? (typeof window !== "undefined" ? window.location.hostname : ""),
+    FIELD_LIMITS.siteHost,
+  );
+
+  const utm = normalizeUtm(payload);
+  const quiz = normalizeQuiz(payload.quiz);
+
+  const flatPayload: Record<string, string> = {
+    siteId: clean(SITE_CONFIG.siteId, FIELD_LIMITS.siteId),
+    siteUrl: clean(SITE_CONFIG.siteUrl, FIELD_LIMITS.siteUrl),
+    chatId: clean(SITE_CONFIG.chatId, FIELD_LIMITS.chatId),
+    name: clean(payload.name, FIELD_LIMITS.name),
+    phone: clean(payload.phone, FIELD_LIMITS.phone),
+    email: clean(payload.email, FIELD_LIMITS.email),
+    source: clean(payload.source ?? "lead", FIELD_LIMITS.source),
+    message: clean(payload.message, FIELD_LIMITS.message),
+    hp: clean(payload.hp, FIELD_LIMITS.hp),
+    pageUrl,
+    siteHost,
+    utm_source: utm.utm_source,
+    utm_medium: utm.utm_medium,
+    utm_campaign: utm.utm_campaign,
+    utm_content: utm.utm_content,
+    utm_term: utm.utm_term,
+  };
+
+  if (quiz) {
+    flatPayload.quiz = quiz;
+  }
+
+  const body = new URLSearchParams(flatPayload).toString();
+
+  try {
+    const response = await fetch(APPS_SCRIPT_URL, {
       method: "POST",
       headers: {
-        "Content-Type": "application/json",
+        "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
       },
-      body: JSON.stringify(payload),
-    })
-    webhookResult = { ok: response.ok, status: response.status, skipped: false }
-  }
+      body,
+      signal: controller.signal,
+    });
 
-  const telegramResult = await sendTelegram(payload)
+    if (!response.ok) {
+      const responseText = await response.text();
+      throw new Error(`Lead request failed: HTTP ${response.status}; body=${responseText.slice(0, 300)}`);
+    }
 
-  return {
-    ok: webhookResult.ok && telegramResult.ok,
-    webhook: webhookResult,
-    telegram: telegramResult,
+    return { ok: true };
+  } finally {
+    clearTimeout(timeoutId);
   }
 }
+
